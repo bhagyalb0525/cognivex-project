@@ -1,110 +1,109 @@
 """
-COGNIVEX - OTP Controller (SIMPLE - In Memory)
-Generates OTP in-memory, no database issues
+COGNIVEX - OTP Controller
+In-memory OTP generation and verification
+OTP codes printed to terminal for testing
 """
 
 import random
 import string
 from datetime import datetime, timedelta
 
-COOLDOWN_MINUTES = 10
-
 class OTPController:
     
     def __init__(self, supabase):
         self.supabase = supabase
-        self.otp_storage = {}  # In-memory storage: {session_id: {'code': '1234', 'expires_at': time, 'verified': False}}
+        self.otp_storage = {}  # {session_id: {'code': 'XXXX', 'expires_at': time}}
     
-    def createOTP(self, user_id: str, session_id: str) -> str:
-        """
-        Generate OTP in memory
-        NO database involved
-        """
+    def generateOTP(self, user_id: str = None, session_id: str = None) -> str:
+        """Generate OTP in memory and print to terminal"""
         
-        print(f"   Creating OTP in memory...")
-        
-        # Check cooldown in database
-        isInCooldown = self.supabase.check_cooldown(user_id, session_id)
-        
-        if isInCooldown:
-            print(f"   ⏳ User in OTP cooldown - not asking again")
-            return None
+        print(f"   Creating OTP challenge...")
         
         # Generate random 4-digit OTP
         otpCode = ''.join(random.choices(string.digits, k=4))
         
-        # Store in memory (not database)
+        # Store in memory
         expires_at = datetime.now() + timedelta(minutes=2)
         
-        self.otp_storage[session_id] = {
-            'user_id': user_id,
-            'code': otpCode,
-            'expires_at': expires_at,
-            'verified': False
-        }
+        if session_id:
+            self.otp_storage[session_id] = {
+                'user_id': user_id,
+                'code': otpCode,
+                'expires_at': expires_at
+            }
         
-        print(f"   ✅ OTP generated in memory")
+        # PRINT TO TERMINAL FOR TESTING
+        print(f"\n" + "="*70)
+        print(f"   🔐 OTP GENERATED (MEDIUM RISK DETECTED)")
+        print(f"   {'='*70}")
         print(f"   📧 OTP Code: {otpCode}")
         print(f"   Expires at: {expires_at.strftime('%H:%M:%S')}")
+        if session_id:
+            print(f"   Session ID: {session_id}")
+        print(f"   {'='*70}\n")
         
         return otpCode
     
-    def verifyOTP(self, user_id: str, session_id: str, provided_code: str) -> bool:
-        """
-        Verify OTP from memory
-        NO database involved
-        """
+    def createOTP(self, user_id: str, session_id: str) -> str:
+        """Alias for generateOTP for backward compatibility"""
+        return self.generateOTP(user_id, session_id)
+    
+    def storeOTP(self, user_id: str, session_id: str, otp_code: str, ip_address: str) -> str:
+        """Store OTP to database"""
+        try:
+            return self.supabase.store_otp(user_id, session_id, otp_code, ip_address)
+        except Exception as e:
+            print(f"   ⚠️ Error storing OTP to database: {e}")
+            return None
+    
+    def verifyOTP(self, user_id: str, session_id: str, provided_code: str) -> dict:
+        """Verify OTP from memory"""
         
         print(f"   Verifying OTP...")
-        print(f"   User provided: {provided_code}")
-        print(f"   Session ID: {session_id}")
         
         # Check if OTP exists for this session
         if session_id not in self.otp_storage:
             print(f"   ❌ No OTP generated for this session")
-            return False
+            return {
+                'valid': False,
+                'reason': 'No OTP generated for this session'
+            }
         
         otp_data = self.otp_storage[session_id]
         stored_code = otp_data['code']
         expires_at = otp_data['expires_at']
         
+        print(f"   Provided code: {provided_code}")
         print(f"   Stored code: {stored_code}")
-        print(f"   Stored code type: {type(stored_code)}")
-        print(f"   Provided code type: {type(provided_code)}")
         
         # Check expiry
         if datetime.now() > expires_at:
             print(f"   ⏰ OTP expired")
-            del self.otp_storage[session_id]  # Clean up
-            return False
-        
-        # Check code - exact match
-        if str(stored_code) == str(provided_code).strip():
-            print(f"   ✅ OTP MATCHES!")
-            
-            # Mark as verified
-            otp_data['verified'] = True
-            
-            # Set cooldown in database
-            print(f"   Setting cooldown for {COOLDOWN_MINUTES} minutes...")
-            self.supabase.set_cooldown(user_id, session_id, COOLDOWN_MINUTES)
-            
-            print(f"   ✅ OTP verification successful!")
-            
-            # Clean up
             del self.otp_storage[session_id]
-            
-            return True
+            return {
+                'valid': False,
+                'reason': 'OTP expired'
+            }
+        
+        # Check code
+        if str(stored_code) == str(provided_code).strip():
+            print(f"   ✅ OTP VERIFIED!")
+            del self.otp_storage[session_id]
+            return {
+                'valid': True,
+                'reason': 'OTP verified successfully'
+            }
         else:
             print(f"   ❌ OTP does not match")
-            print(f"      Expected: '{stored_code}'")
-            print(f"      Got: '{str(provided_code).strip()}'")
-            return False
+            return {
+                'valid': False,
+                'reason': 'OTP does not match'
+            }
     
     def checkCooldown(self, user_id: str, session_id: str) -> bool:
-        """Check if in cooldown (from database)"""
-        return self.supabase.check_cooldown(user_id, session_id)
+        """Check if in cooldown (placeholder for now)"""
+        return False
     
     def getOTPStorage(self):
-        """Debug: see what's in memory (DO NOT USE IN PRODUCTION)"""
+        """Debug: see what's in memory"""
         return self.otp_storage

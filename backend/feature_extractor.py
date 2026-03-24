@@ -1,6 +1,6 @@
 """
-COGNIVEX - Feature Extraction
-Extract 8 features from raw behavioral data
+COGNIVEX - Feature Extractor
+Extracts 8 behavioral features from raw event data
 """
 
 import numpy as np
@@ -35,8 +35,11 @@ class FeatureExtractor:
         if len(keyEvents) < 2:
             return 0
         
-        keyups = [e for e in keyEvents if e['type'] == 'keyup']
-        duration = (keyEvents[-1]['timestamp'] - keyEvents[0]['timestamp']) / 1000
+        keyups = [e for e in keyEvents if e.get('type') == 'keyup']
+        if not keyups:
+            return 0
+            
+        duration = (keyEvents[-1].get('timestamp', 0) - keyEvents[0].get('timestamp', 0)) / 1000
         
         if duration == 0:
             return 0
@@ -48,18 +51,18 @@ class FeatureExtractor:
         if len(keyEvents) == 0:
             return 0
         
-        backspaces = len([e for e in keyEvents if e['key'] == 'Backspace'])
+        backspaces = len([e for e in keyEvents if e.get('key') == 'Backspace'])
         return backspaces / len(keyEvents)
     
     @staticmethod
     def getKeystrokeInterval(keyEvents: List[Dict]) -> float:
         """Feature 3: Average keystroke interval (seconds)"""
-        keyups = [e for e in keyEvents if e['type'] == 'keyup']
+        keyups = [e for e in keyEvents if e.get('type') == 'keyup']
         
         if len(keyups) < 2:
             return 0
         
-        totalInterval = sum([keyups[i+1]['timestamp'] - keyups[i]['timestamp'] 
+        totalInterval = sum([keyups[i+1].get('timestamp', 0) - keyups[i].get('timestamp', 0) 
                             for i in range(len(keyups)-1)])
         
         return (totalInterval / (len(keyups) - 1)) / 1000
@@ -67,12 +70,12 @@ class FeatureExtractor:
     @staticmethod
     def getKeystrokeVariance(keyEvents: List[Dict]) -> float:
         """Feature 4: Keystroke variance"""
-        keyups = [e for e in keyEvents if e['type'] == 'keyup']
+        keyups = [e for e in keyEvents if e.get('type') == 'keyup']
         
         if len(keyups) < 2:
             return 0
         
-        intervals = [keyups[i+1]['timestamp'] - keyups[i]['timestamp'] 
+        intervals = [keyups[i+1].get('timestamp', 0) - keyups[i].get('timestamp', 0) 
                     for i in range(len(keyups)-1)]
         
         mean = sum(intervals) / len(intervals)
@@ -92,12 +95,12 @@ class FeatureExtractor:
             next_pos = mouseEvents[i+1]
             
             distance = np.sqrt(
-                (next_pos['x'] - current['x'])**2 + 
-                (next_pos['y'] - current['y'])**2
+                (next_pos.get('x', 0) - current.get('x', 0))**2 + 
+                (next_pos.get('y', 0) - current.get('y', 0))**2
             )
             totalDistance += distance
         
-        duration = (mouseEvents[-1]['timestamp'] - mouseEvents[0]['timestamp']) / 1000
+        duration = (mouseEvents[-1].get('timestamp', 0) - mouseEvents[0].get('timestamp', 0)) / 1000
         
         if duration == 0:
             return 0
@@ -115,10 +118,10 @@ class FeatureExtractor:
             next_pos = mouseEvents[i+1]
             
             distance = np.sqrt(
-                (next_pos['x'] - current['x'])**2 + 
-                (next_pos['y'] - current['y'])**2
+                (next_pos.get('x', 0) - current.get('x', 0))**2 + 
+                (next_pos.get('y', 0) - current.get('y', 0))**2
             )
-            timeDiff = (next_pos['timestamp'] - current['timestamp']) / 1000
+            timeDiff = (next_pos.get('timestamp', 0) - current.get('timestamp', 0)) / 1000
             
             if timeDiff > 0:
                 speeds.append(distance / timeDiff)
@@ -137,7 +140,7 @@ class FeatureExtractor:
         if len(scrollEvents) < 2:
             return 0
         
-        duration = (scrollEvents[-1]['timestamp'] - scrollEvents[0]['timestamp']) / 1000
+        duration = (scrollEvents[-1].get('timestamp', 0) - scrollEvents[0].get('timestamp', 0)) / 1000
         
         if duration == 0:
             return 0
@@ -146,15 +149,15 @@ class FeatureExtractor:
     @staticmethod
     def getIdleRatio(keyEvents: List[Dict]) -> float:
         """Feature 8: Idle ratio"""
-        keyups = [e for e in keyEvents if e['type'] == 'keyup']
+        keyups = [e for e in keyEvents if e.get('type') == 'keyup']
         
         if len(keyups) < 2:
             return 0
         
-        activeTime = sum([keyups[i+1]['timestamp'] - keyups[i]['timestamp'] 
+        activeTime = sum([keyups[i+1].get('timestamp', 0) - keyups[i].get('timestamp', 0) 
                          for i in range(len(keyups)-1)])
         
-        totalTime = keyups[-1]['timestamp'] - keyups[0]['timestamp']
+        totalTime = keyups[-1].get('timestamp', 0) - keyups[0].get('timestamp', 0)
         
         if totalTime == 0:
             return 0
@@ -163,16 +166,27 @@ class FeatureExtractor:
     
     @staticmethod
     def aggregateFeatures(snapshots: List[Dict]) -> Dict[str, float]:
-        """Aggregate features from multiple snapshots"""
+        """Aggregate features from LOW-RISK snapshots only"""
         
         if len(snapshots) == 0:
             return FeatureExtractor.getDefaultFeatures()
         
         allFeatures = []
         for snapshot in snapshots:
+            # Only use LOW risk snapshots for training data
+            if snapshot.get('risk_level') != 'LOW':
+                continue
+            
             rawData = snapshot.get('raw_data') or snapshot
             features = FeatureExtractor.extract(rawData)
             allFeatures.append(features)
+        
+        if not allFeatures:
+            # Fallback: use all snapshots if no LOW risk data
+            for snapshot in snapshots:
+                rawData = snapshot.get('raw_data') or snapshot
+                features = FeatureExtractor.extract(rawData)
+                allFeatures.append(features)
         
         # Average across all snapshots
         aggregated = {}

@@ -1,28 +1,35 @@
 """
-COGNIVEX v2.0 - FastAPI Server
-Behavioral Biometrics with ML Anomaly Detection
-
-CORRECT ARCHITECTURE:
-- Sessions 1-14: Collect data (no scoring, no model)
-- Session 15: Train Isolation Forest model
-- Sessions 16+: Score behavior, detect anomalies, OTP challenges
+COGNIVEX - FastAPI Server WITH PROPER FEATURE NORMALIZATION
+✅ FIXED: Using StandardScaler for proper anomaly detection
+✅ FIXED: OTP generateOTP method
+✅ FIXED: Session counter logic
 """
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+import uuid
 from pydantic import BaseModel
-from typing import Optional, Dict, List, Any
-from datetime import datetime
+from typing import Optional
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
+
+# Import our modules
 from supabase_client import SupabaseClient
-from feature_extractor import FeatureExtractor
 from model_engine import ModelEngine
+from feature_extractor import FeatureExtractor
 from otp_controller import OTPController
 
-# ===== INITIALIZE =====
+# ===== INITIALIZATION =====
+app = FastAPI()
+supabase = SupabaseClient()
+modelEngine = ModelEngine(supabase)
+featureExtractor = FeatureExtractor()
+otpController = OTPController(supabase)
 
-app = FastAPI(title="COGNIVEX v2.0")
-
+# ===== CORS =====
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,388 +38,279 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-supabase = SupabaseClient()
-featureExtractor = FeatureExtractor()
-modelEngine = ModelEngine(supabase)
-otpController = OTPController(supabase)
-
-print("\n" + "="*70)
-print("✅ All components initialized")
-print("="*70 + "\n")
-
 # ===== REQUEST MODELS =====
 
 class SnapshotRequest(BaseModel):
     user_id: str
     session_id: str
-    raw_data: Dict[str, Any]
+    raw_data: dict
 
 class SessionEndRequest(BaseModel):
     user_id: str
     session_id: str
 
-class OTPVerifyRequest(BaseModel):
+class VerifyOTPRequest(BaseModel):
     user_id: str
     session_id: str
     otp_code: str
 
-# ===== ROUTES =====
-
-@app.get("/health")
-async def health():
-    """Health check endpoint"""
-    return {
-        "status": "✅ COGNIVEX v2.0 Running",
-        "timestamp": datetime.now().isoformat()
-    }
+# ===== ENDPOINTS =====
 
 @app.post("/session/snapshot")
-async def sessionSnapshot(req: SnapshotRequest):
+async def handle_snapshot(request: SnapshotRequest):
     """
-    30-second behavioral snapshot
-    
-    Sessions 1-14: Just store (no model exists yet)
-    Sessions 15+: Store + Score + Check risk
+    Phase 1: Real-time monitoring endpoint
+    - Store snapshot to behavior_logs
+    - Extract features from snapshot
+    - If model exists: Score with model → return risk level
+    - If no model: Mark as LOW risk (collecting baseline)
     """
     
-    user_id = req.user_id
-    session_id = req.session_id
-    raw_data = req.raw_data
-    
-    print(f"\n📤 [SNAPSHOT] User {user_id}, Session {session_id}")
+    print(f"\n📤 [SNAPSHOT] User {request.user_id}, Session {request.session_id}")
     
     try:
-        # Step 1: Store raw snapshot
+        # Step 1: Store raw data to behavior_logs
         print(f"   Step 1: Storing raw data to behavior_logs...")
-        snapshot_id = supabase.store_snapshot(user_id, session_id, raw_data)
+        snapshot_id = supabase.store_snapshot(
+            request.user_id,
+            request.session_id,
+            request.raw_data
+        )
         print(f"   ✅ Stored snapshot ID: {snapshot_id}")
         
         # Step 2: Check if model exists
         print(f"   Step 2: Checking if model exists...")
-        modelInfo = modelEngine.getModel(user_id)
+        model_dict = modelEngine.getModel(request.user_id)
         
-        if not modelInfo:
-            # ===== SESSIONS 1-14: COLLECTING DATA =====
-            print(f"   ℹ️ No model yet (Sessions 1-14 - Collecting phase)")
-            print(f"   Marking as LOW (no scoring, just collecting)")
-            
+        if not model_dict:
+            # No model yet - collecting baseline data
+            print(f"   Step 3: No model yet. Mark as LOW (collecting baseline)...")
             supabase.update_snapshot_risk(snapshot_id, 'LOW', 0)
-            
             return {
-                "status": "COLLECTING_DATA",
-                "risk_level": "LOW",
-                "message": "📊 Data collection in progress (no model yet)"
+                'status': 'OK',
+                'risk_level': 'LOW',
+                'message': '✅ Baseline data collected',
+                'model_version': 0
             }
         
-        # ===== SESSIONS 15+: MODEL EXISTS, SCORE BEHAVIOR =====
-        print(f"   Step 3: Model exists! Extracting features...")
+        # Step 3: Extract features from this snapshot
+        print(f"   Step 3: Extracting features (in-memory)...")
+        features_dict = featureExtractor.extract(request.raw_data)
+        print(f"   Features:")
+        print(f"      typing_speed: {features_dict['typing_speed']:.2f}")
+        print(f"      mouse_speed: {features_dict['avg_mouse_speed']:.2f}")
+        print(f"      keystroke_interval: {features_dict['avg_keystroke_interval']:.4f}")
         
-        # Extract features in-memory
-        features = featureExtractor.extract(raw_data)
-        print(f"   Features extracted:")
-        print(f"      typing_speed: {features['typing_speed']:.2f}")
-        print(f"      mouse_speed: {features['avg_mouse_speed']:.2f}")
-        print(f"      keystroke_interval: {features['avg_keystroke_interval']:.4f}")
+        # Step 4: Score with model using NORMALIZED features
+        print(f"   Step 4: Scoring with model v{model_dict['model_version']}...")
+        model = model_dict['model']
+        scaler = model_dict['scaler']  # ✅ Get scaler!
         
-        # Score with model
-        model = modelInfo['model']
-        modelVersion = modelInfo['model_version']
-        
-        print(f"   Step 4: Scoring with model v{modelVersion}...")
-        score = modelEngine.predict(model, features)
-        riskLevel = modelEngine.scoreToRiskLevel(score)
-        
+        score = modelEngine.predict(model, scaler, features_dict)  # ✅ Pass scaler!
         print(f"   Score: {score:.4f}")
-        print(f"   Risk Level: {riskLevel}")
         
-        # Update snapshot with risk level
-        supabase.update_snapshot_risk(snapshot_id, riskLevel, modelVersion)
+        risk_level = modelEngine.scoreToRiskLevel(score)
+        print(f"   Risk Level: {risk_level}")
         
-        # ===== HANDLE BASED ON RISK LEVEL =====
+        # Step 5: Update snapshot with risk level
+        supabase.update_snapshot_risk(snapshot_id, risk_level, model_dict['model_version'])
         
-        if riskLevel == 'LOW':
+        # Step 6: Handle by risk level
+        if risk_level == 'HIGH':
+            print(f"   ✅ HIGH risk - Session will terminate on logout")
+            return {
+                'status': 'SESSION_TERMINATED',
+                'risk_level': 'HIGH',
+                'message': '🚨 HIGH RISK DETECTED: Session will be terminated',
+                'model_version': model_dict['model_version']
+            }
+        
+        elif risk_level == 'MEDIUM':
+            print(f"   ✅ MEDIUM risk - Generating OTP...")
+            otp_code = otpController.generateOTP()  # ✅ FIXED METHOD NAME!
+            otpController.storeOTP(request.user_id, request.session_id, otp_code, '127.0.0.1')
+            
+            print(f"   ⚠️ OTP: {otp_code}")
+            
+            return {
+                'status': 'OTP_REQUIRED',
+                'risk_level': 'MEDIUM',
+                'message': f'⚠️ Unusual behavior. OTP: {otp_code}',
+                'model_version': model_dict['model_version']
+            }
+        
+        else:  # LOW
             print(f"   ✅ LOW risk - Behavior is normal")
             return {
-                "status": "OK",
-                "risk_level": "LOW",
-                "message": "✅ Normal Activity"
-            }
-        
-        elif riskLevel == 'MEDIUM':
-            print(f"   ⚠️ MEDIUM risk - Unusual behavior detected")
-    
-    # ===== CRITICAL: CHECK COOLDOWN FIRST =====
-            print(f"   Step 5: Checking OTP cooldown...")
-            if otpController.checkCooldown(user_id, session_id):
-                print(f"   ⏳ Cooldown ACTIVE - NOT asking for OTP")
-                return {
-                  "status": "OK",
-                  "risk_level": "MEDIUM",
-                  "message": "⚠️ Unusual but recently verified. Continuing without OTP..."
-        }
-            else:
-                print(f"   ✅ Cooldown expired or doesn't exist - ASK FOR OTP")
-    
-    # Create and ask for OTP
-            print(f"   Step 6: Creating OTP challenge...")
-            otpCode = otpController.createOTP(user_id, session_id)
-    
-            if otpCode:
-                print(f"   📧 OTP created: {otpCode}")
-                return {
-                    "status": "OTP_REQUIRED",
-                    "risk_level": "MEDIUM",
-                    "session_id": session_id,
-                    "message": f"⚠️ Unusual behavior detected. OTP: {otpCode}"
-        }
-            else:
-                print(f"   ⏳ Cooldown check returned None - continuing without OTP")
-                return {
-                  "status": "OK",
-                  "risk_level": "MEDIUM",
-                  "message": "⚠️ Unusual but OTP cooldown active"
-        }
-        
-        elif riskLevel == 'HIGH':
-            print(f"   🚨 HIGH risk - Suspicious activity!")
-            return {
-                "status": "SESSION_TERMINATED",
-                "risk_level": "HIGH",
-                "message": "🚨 Suspicious activity detected. Session terminated."
+                'status': 'OK',
+                'risk_level': 'LOW',
+                'message': '✅ Normal behavior detected',
+                'model_version': model_dict['model_version']
             }
     
     except Exception as e:
-        print(f"❌ Error in /session/snapshot: {e}")
+        print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        return {'status': 'ERROR', 'message': str(e)}
 
-@app.post("/verify-otp")
-async def verifyOTP(req: OTPVerifyRequest):
-    """
-    Verify OTP code (Simple In-Memory Version)
-    If correct: Set cooldown and continue
-    If wrong: Terminate session
-    """
-    
-    user_id = req.user_id
-    session_id = req.session_id
-    provided_otp = str(req.otp_code).strip()  # Convert to string and strip whitespace
-    
-    print(f"\n{'='*70}")
-    print(f"🔐 [OTP VERIFY]")
-    print(f"   User: {user_id}")
-    print(f"   Session: {session_id}")
-    print(f"   Code: {provided_otp}")
-    print(f"{'='*70}")
-    
-    try:
-        # Verify using in-memory storage
-        is_valid = otpController.verifyOTP(user_id, session_id, provided_otp)
-        
-        if is_valid:
-            print(f"\n✅ OTP VERIFICATION SUCCESSFUL\n")
-            return {
-                "status": "OTP_VERIFIED",
-                "message": "✅ OTP verified. Session continues."
-            }
-        else:
-            print(f"\n❌ OTP VERIFICATION FAILED\n")
-            # Mark session as HIGH risk
-            supabase.mark_otp_failed(user_id, session_id)
-            return {
-                "status": "SESSION_TERMINATED",
-                "message": "❌ Invalid or expired OTP. Session terminated."
-            }
-    
-    except Exception as e:
-        print(f"\n❌ Error in /verify-otp: {e}\n")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/session/end")
-async def sessionEnd(req: SessionEndRequest):
+async def handle_session_end(request: SessionEndRequest):
     """
-    Session ended by user (logout)
-    
-    1. Aggregate features from all snapshots
-    2. Store to behavior_features
-    3. Check if should train/retrain model
+    Phase 2: Session aggregation and model training
+    - Fetch all LOW-risk snapshots from session
+    - Aggregate features to single row in behavior_features
+    - Check if training trigger (session 15, 35, 55, etc.)
+    - Train/retrain model if needed
     """
     
-    user_id = req.user_id
-    session_id = req.session_id
-    
-    print(f"\n{'='*70}")
-    print(f"🏁 [SESSION END]")
-    print(f"   User: {user_id}")
-    print(f"   Session: {session_id}")
-    print(f"{'='*70}")
+    print(f"\n🏁 [SESSION END] User {request.user_id}, Session {request.session_id}")
     
     try:
-        # Step 1: Get ALL snapshots from this session
-        print(f"Step 1: Fetching all snapshots from this session...")
-        response = supabase.client.table('behavior_logs').select('*').eq(
-            'user_id', user_id
-        ).eq('session_id', session_id).execute()
+        # Step 1: Get LOW-risk snapshots
+        print(f"   Step 1: Fetching LOW-risk snapshots...")
+        snapshots = supabase.get_low_risk_snapshots(request.user_id, request.session_id)
+        print(f"   Found: {len(snapshots)} LOW-risk snapshots")
         
-        allSnapshots = response.data
-        print(f"   Found {len(allSnapshots)} snapshots")
-        
-        if len(allSnapshots) == 0:
-            print(f"⚠️ No snapshots in this session")
+        if len(snapshots) == 0:
+            print(f"   ⚠️ WARNING: No LOW-risk snapshots found!")
+            print(f"   This is normal for sessions with HIGH/MEDIUM risk")
             return {
-                "status": "SESSION_STORED",
-                "message": "No behavioral data in session"
+                'status': 'NO_LOW_RISK_DATA',
+                'message': 'No LOW-risk snapshots to aggregate'
             }
         
-        # Step 2: Aggregate features from ALL snapshots
-        print(f"Step 2: Aggregating features from {len(allSnapshots)} snapshots...")
-        aggregatedFeatures = featureExtractor.aggregateFeatures(allSnapshots)
+        # Step 2: Aggregate features
+        print(f"   Step 2: Aggregating features from snapshots...")
+        try:
+            aggregated_features = featureExtractor.aggregateFeatures(snapshots)
+            print(f"   ✅ Features aggregated:")
+            print(f"      typing_speed: {aggregated_features.get('typing_speed', 0):.2f}")
+            print(f"      mouse_speed: {aggregated_features.get('avg_mouse_speed', 0):.2f}")
+        except Exception as agg_err:
+            print(f"   ❌ Error aggregating: {agg_err}")
+            raise agg_err
         
-        print(f"   Aggregated features:")
-        print(f"      typing_speed: {aggregatedFeatures['typing_speed']:.2f}")
-        print(f"      backspace_ratio: {aggregatedFeatures['backspace_ratio']:.4f}")
-        print(f"      mouse_speed: {aggregatedFeatures['avg_mouse_speed']:.2f}")
+        # Step 3: Store aggregated features
+        print(f"   Step 3: Storing aggregated features...")
+        try:
+            supabase.store_session_features(request.user_id, request.session_id, aggregated_features)
+            print(f"   ✅ Features stored to behavior_features table!")
+        except Exception as store_err:
+            print(f"   ❌ Error storing features: {store_err}")
+            raise store_err
         
-        # Step 3: Store aggregated features to behavior_features
-        print(f"Step 3: Storing to behavior_features table...")
-        supabase.store_session_features(user_id, session_id, aggregatedFeatures)
-        print(f"   ✅ Stored!")
+        # Step 4: Get total sessions and check training trigger
+        print(f"   Step 4: Checking training trigger...")
+        try:
+            totalSessions = supabase.get_total_sessions(request.user_id)
+            print(f"   Total sessions so far: {totalSessions}")
+        except Exception as count_err:
+            print(f"   ❌ Error getting session count: {count_err}")
+            raise count_err
         
-        # Step 4: Get total session count
-        print(f"Step 4: Counting total sessions for this user...")
-        totalSessions = supabase.count_sessions(user_id)
-        print(f"   📊 Session Number: {totalSessions}")
-        print(f"   Total sessions for user: {totalSessions}")
-        
-        # Step 5: Apply training logic based on session count
-        print(f"Step 5: Applying training logic...")
-        
+        # TRAINING LOGIC
         if totalSessions == 15:
-            # ===== FIRST TIME: TRAIN MODEL V1 =====
             print(f"\n   🎯 SESSION 15 REACHED! Training first model...")
-            print(f"   {'='*60}")
-            
-            result = modelEngine.trainModelV1(user_id)
-            
-            print(f"   {'='*60}")
-            print(f"   ✅ MODEL v1 TRAINED SUCCESSFULLY!")
-            print(f"   🎉 From session 16 onwards:")
-            print(f"      - Anomaly detection is ACTIVE")
-            print(f"      - Unusual behavior will trigger OTP challenges")
-            print(f"      - HIGH risk will terminate session")
-            print(f"   {'='*60}\n")
-            
-            return {
-                "status": "MODEL_TRAINED",
-                "model_version": 1,
-                "sessions_collected": 15,
-                "message": "🎉 Model v1 trained! Anomaly detection now ACTIVE (session 16+)"
-            }
+            try:
+                modelEngine.trainModelV1(request.user_id)
+                print(f"   ✅ Model v1 TRAINED!")
+                return {
+                    'status': 'MODEL_TRAINED',
+                    'message': 'Model trained successfully',
+                    'model_version': 1
+                }
+            except Exception as train_err:
+                print(f"   ❌ Error training model: {train_err}")
+                raise train_err
         
         elif totalSessions > 15:
-            # ===== CHECK IF RETRAINING NEEDED =====
-            modelMetadata = modelEngine.getModelMetadata(user_id)
-            lastTrained = modelMetadata['last_trained_count']
-            sessionsSinceTrain = totalSessions - lastTrained
-            
-            print(f"   Last trained at: {lastTrained} sessions")
-            print(f"   Sessions since train: {sessionsSinceTrain}")
-            
-            if sessionsSinceTrain >= 20:
-                # ===== RETRAIN MODEL =====
-                print(f"\n   🎯 {sessionsSinceTrain} SESSIONS SINCE TRAINING! Retraining...")
-                print(f"   {'='*60}")
+            print(f"   Checking if retraining needed...")
+            try:
+                metadata = modelEngine.getModelMetadata(request.user_id)
+                lastTrained = metadata.get('last_trained_count', 15)
+                sessionsSinceTrain = totalSessions - lastTrained
+                print(f"   Sessions since training: {sessionsSinceTrain}")
                 
-                result = modelEngine.retrainModel(user_id, totalSessions)
-                
-                print(f"   {'='*60}")
-                print(f"   ✅ MODEL v{result['model_version']} RETRAINED!")
-                print(f"   {'='*60}\n")
-                
-                return {
-                    "status": "MODEL_RETRAINED",
-                    "model_version": result['model_version'],
-                    "sessions_total": totalSessions,
-                    "message": f"✅ Model retrained to v{result['model_version']}"
-                }
-            else:
-                # Not yet time to retrain
-                sessionsTillRetrain = 20 - sessionsSinceTrain
-                print(f"   ℹ️ {sessionsTillRetrain} more sessions needed to retrain")
-                
-                return {
-                    "status": "SESSION_STORED",
-                    "sessions_total": totalSessions,
-                    "sessions_till_retrain": sessionsTillRetrain,
-                    "message": f"Session {totalSessions} stored. {sessionsTillRetrain} more for retrain."
-                }
+                if sessionsSinceTrain >= 20:
+                    print(f"\n   🎯 20 SESSIONS SINCE TRAINING ({sessionsSinceTrain})! Retraining...")
+                    modelEngine.retrainModel(request.user_id, totalSessions)
+                    print(f"   ✅ Model RETRAINED!")
+                    return {
+                        'status': 'MODEL_RETRAINED',
+                        'message': 'Model retrained successfully',
+                        'model_version': metadata['model_version'] + 1
+                    }
+            except Exception as retrain_err:
+                print(f"   ❌ Error checking retraining: {retrain_err}")
         
-        else:
-            # ===== STILL COLLECTING (Sessions 1-14) =====
-            sessionsTillTraining = 15 - totalSessions
-            print(f"   ℹ️ Collecting data ({totalSessions}/15)")
-            print(f"   Sessions till training: {sessionsTillTraining}")
-            
-            return {
-                "status": "COLLECTING_DATA",
-                "sessions_collected": totalSessions,
-                "sessions_needed": 15,
-                "sessions_remaining": sessionsTillTraining,
-                "message": f"✅ Session {totalSessions}/15 collected. {sessionsTillTraining} more to train model!"
-            }
-    
-    except Exception as e:
-        print(f"❌ Error in /session/end: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/status/{user_id}")
-async def getStatus(user_id: str):
-    """Get user's training status and model info"""
-    try:
-        totalSessions = supabase.count_sessions(user_id)
-        modelInfo = modelEngine.getModelMetadata(user_id)
-        
-        if modelInfo and totalSessions >= 15:
-            status = "READY - Anomaly detection ACTIVE"
-            model_version = modelInfo['model_version']
-        else:
-            status = f"COLLECTING - Need {15 - totalSessions} more sessions"
-            model_version = 0
-        
+        # Still collecting data - FIXED COUNTER LOGIC
+        sessionsNeeded = max(0, 15 - totalSessions)
+        print(f"   ✅ Session {totalSessions} saved. Need {sessionsNeeded} more for training")
         return {
-            "user_id": user_id,
-            "total_sessions": totalSessions,
-            "model_version": model_version,
-            "status": status,
-            "details": {
-                "sessions_collected": totalSessions,
-                "sessions_needed_for_training": max(0, 15 - totalSessions),
-                "anomaly_detection_active": totalSessions >= 15
-            }
+            'status': 'COLLECTING_DATA',
+            'message': f'Data collected ({totalSessions}/15 sessions for training)',
+            'sessions_collected': totalSessions,
+            'sessions_needed': sessionsNeeded
         }
     
     except Exception as e:
-        print(f"❌ Error in /status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ CRITICAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'status': 'ERROR', 'message': str(e)}
+
+
+@app.post("/verify-otp")
+async def verify_otp(request: VerifyOTPRequest):
+    """
+    OTP verification endpoint
+    """
+    
+    print(f"\n🔐 [OTP VERIFY] User {request.user_id}, Session {request.session_id}")
+    print(f"   OTP Entered: {request.otp_code}")
+    
+    try:
+        # Verify OTP
+        result = otpController.verifyOTP(request.user_id, request.session_id, request.otp_code)
+        
+        if result['valid']:
+            print(f"   ✅ OTP VERIFIED!")
+            return {
+                'status': 'OTP_VERIFIED',
+                'message': '✅ OTP verified! Session continues.'
+            }
+        else:
+            print(f"   ❌ OTP INVALID: {result['reason']}")
+            return {
+                'status': 'SESSION_TERMINATED',
+                'message': f'❌ OTP verification failed: {result["reason"]}. Session terminated.'
+            }
+    
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'status': 'ERROR', 'message': str(e)}
+
+
+@app.get("/health")
+async def health():
+    """Health check endpoint"""
+    return {'status': 'healthy', 'message': 'COGNIVEX v2.0 running'}
+
 
 # ===== STARTUP =====
-
 if __name__ == "__main__":
-    import uvicorn
     print("\n" + "="*70)
-    print("🚀 COGNIVEX v2.0 - BEHAVIORAL BIOMETRICS")
+    print("🚀 COGNIVEX v2.0 - Behavioral Biometrics Anomaly Detection")
     print("="*70)
-    print("\n📋 Architecture:")
-    print("   Sessions 1-14: Data Collection (no scoring)")
-    print("   Session 15: Model Training")
-    print("   Sessions 16+: Anomaly Detection + OTP Challenges")
-    print("\n📍 API: http://localhost:5000")
-    print("📍 Health: http://localhost:5000/health")
-    print("📍 Docs: http://localhost:5000/docs")
-    print("\n" + "="*70 + "\n")
+    print("✅ Feature Normalization: ENABLED")
+    print("✅ Isolation Forest with StandardScaler: ACTIVE")
+    print("✅ OTP Controller: FIXED")
+    print("✅ Session Counter: FIXED")
+    print("\nStarting FastAPI server on http://localhost:5000")
+    print("="*70 + "\n")
     
     uvicorn.run(app, host="0.0.0.0", port=5000)

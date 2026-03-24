@@ -67,30 +67,19 @@
         <span>Session Active – Behavioral Monitoring Enabled</span>
     </div>
 
+    <!-- SECURITY STATUS IN HEADER -->
+    <div class="header-security-status">
+        <div id="risk-indicator" class="risk-indicator-small low-risk"></div>
+        <span id="risk-level-text-header">✅ Normal</span>
+    </div>
+
     <button class="btn btn-text" id="logoutBtn">Sign Out</button>
 </header>
 
 <!-- ===== MAIN CONTENT ===== -->
 <main class="dashboard-main">
 
-    <!-- ===== SECURITY STATUS CARD (NEW) ===== -->
-    <section class="security-card-section">
-        <div class="section-container">
-            <div class="security-card">
-                <div class="card-header">
-                    <h3>🔐 Security Status</h3>
-                </div>
-                <div class="card-body">
-                    <div class="risk-indicator-container">
-                        <div id="risk-indicator" class="risk-indicator low-risk"></div>
-                        <p id="risk-level-text">✅ Normal Activity</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- ===== INPUT SECTION ===== -->
+    <!-- ===== INPUT SECTION (NOW FIRST) ===== -->
     <section class="input-section">
         <div class="section-container">
             <h2>Research Notes</h2>
@@ -138,7 +127,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const feedbackMessage = document.getElementById('feedback-message');
     const logoutBtn = document.getElementById('logoutBtn');
 
-    // ===== RESEARCH CONTENT =====
     // ===== RESEARCH CONTENT =====
 const contentParagraphs = [
     "Zero Trust Architecture is a modern security framework that fundamentally changes how organizations approach access control. Instead of trusting any user or device within a corporate network, Zero Trust requires continuous verification of identity and device posture before granting access to resources.",
@@ -267,7 +255,77 @@ const contentParagraphs = [
     });
 
 });
+
+// Function to update header security status
+function updateHeaderSecurityStatus(riskLevel) {
+    const indicator = document.querySelector('.header-security-status .risk-indicator-small');
+    const text = document.getElementById('risk-level-text-header');
+    
+    if (!indicator || !text) return;
+    
+    indicator.classList.remove('low-risk', 'medium-risk', 'high-risk');
+    
+    if (riskLevel === 'LOW') {
+        indicator.classList.add('low-risk');
+        text.textContent = '✅ Normal';
+    } else if (riskLevel === 'MEDIUM') {
+        indicator.classList.add('medium-risk');
+        text.textContent = '⚠️ Unusual';
+    } else if (riskLevel === 'HIGH') {
+        indicator.classList.add('high-risk');
+        text.textContent = '🚨 Suspicious';
+    }
+}
 </script>
+
+<!-- ===== OTP MODAL POPUP ===== -->
+<div id="otpModal" class="modal-overlay" style="display: none;">
+    <div class="modal-container otp-modal">
+        <!-- Header -->
+        <div class="modal-header">
+            <h2>⚠️ Unusual Activity Detected</h2>
+        </div>
+        
+        <!-- Content -->
+        <div class="modal-content">
+            <p class="modal-text">
+                Your recent activity seems unusual. 
+                <br><strong>Enter 4 digit verification code.</strong>
+            </p>
+            
+            <!-- OTP Input -->
+            <form id="otpVerifyForm" class="otp-form">
+                <input 
+                    type="text" 
+                    id="otpVerifyInput" 
+                    placeholder="Enter 4-digit OTP" 
+                    maxlength="4"
+                    inputmode="numeric"
+                    pattern="[0-9]{4}"
+                    required
+                    class="otp-input"
+                />
+                <input type="hidden" id="otpSessionId" value="" />
+                <input type="hidden" id="otpUserId" value="" />
+            </form>
+            
+            <!-- Error Message -->
+            <div id="otpError" class="otp-error" style="display: none;">
+                ❌ Invalid OTP. Please try again.
+            </div>
+        </div>
+        
+        <!-- Buttons -->
+        <div class="modal-buttons">
+            <button class="btn-secondary" onclick="closeOTPModal()">
+                Cancel & Logout
+            </button>
+            <button class="btn-primary" onclick="submitOTP()">
+                Verify OTP
+            </button>
+        </div>
+    </div>
+</div>
 
 </body>
 </html>

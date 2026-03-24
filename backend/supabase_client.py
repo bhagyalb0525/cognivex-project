@@ -1,6 +1,6 @@
 """
-COGNIVEX - Supabase Client (FINAL - TIMEZONE FIXED)
-All database operations with proper timezone handling
+COGNIVEX - Supabase Client WITH SCALER STORAGE
+All database operations including StandardScaler storage for feature normalization
 """
 
 import os
@@ -90,31 +90,27 @@ class SupabaseClient:
             }
             
             response = self.client.table('behavior_features').insert(clean_features).execute()
-            
-            print(f"   ✅ Features stored successfully!")
+            print(f"      ✅ Features stored")
             return response.data[0]['id']
-        
         except Exception as e:
             print(f"❌ Error storing features: {e}")
-            import traceback
-            traceback.print_exc()
             raise
     
-    def get_latest_sessions(self, user_id: str, limit: int = 15) -> list:
-        """Get latest N sessions"""
+    def get_latest_sessions(self, user_id: str, limit: int) -> list:
+        """Get latest N sessions' features ordered by creation date"""
         try:
             response = self.client.table('behavior_features').select('*').eq(
                 'user_id', user_id
             ).order('created_at', desc=True).limit(limit).execute()
             
-            # Reverse to get oldest first (for training)
+            # Reverse to get chronological order (oldest to newest)
             return list(reversed(response.data))
         except Exception as e:
             print(f"❌ Error fetching sessions: {e}")
             raise
     
-    def count_sessions(self, user_id: str) -> int:
-        """Count total sessions"""
+    def get_total_sessions(self, user_id: str) -> int:
+        """Count total stored sessions for a user"""
         try:
             response = self.client.table('behavior_features').select(
                 'id', count='exact'
@@ -126,258 +122,161 @@ class SupabaseClient:
     
     # ===== MODEL_METADATA =====
     
-    def save_model(self, user_id: str, model_binary: bytes, model_version: int, total_sessions: int):
-        """
-        Save or update model to model_metadata
-        With CORRECT base64 encoding
-        """
+    def save_model(self, user_id: str, modelBinary: bytes, model_version: int, total_sessions: int):
+        """Save trained model"""
         try:
-            print(f"   💾 Saving model to database...")
-            print(f"   Model size: {len(model_binary)} bytes")
+            # Convert to base64 for storage
+            modelB64 = base64.b64encode(modelBinary).decode()
             
-            # Convert to base64 STRING (not storing binary data)
-            model_base64 = base64.b64encode(model_binary).decode('utf-8')
-            print(f"   Base64 size: {len(model_base64)} chars")
-            
-            # Check if record exists
-            print(f"   Checking for existing model record...")
-            existing = self.client.table('model_metadata').select('id').eq(
+            # Check if metadata exists
+            existing = self.client.table('model_metadata').select('*').eq(
                 'user_id', user_id
             ).execute()
             
-            data = {
-                'model_data': model_base64,  # Store as TEXT (base64 string)
-                'model_version': model_version,
-                'last_trained_count': total_sessions,
-                'total_sessions': total_sessions,
-                'updated_at': datetime.now(timezone.utc).isoformat()
-            }
-            
             if existing.data:
-                # Update existing
-                print(f"   Updating existing model record...")
-                self.client.table('model_metadata').update(data).eq(
-                    'user_id', user_id
-                ).execute()
-                print(f"   ✅ Model updated!")
+                # Update
+                self.client.table('model_metadata').update({
+                    'model_data': modelB64,
+                    'model_version': model_version,
+                    'total_sessions': total_sessions,
+                    'last_trained_at': datetime.now(timezone.utc).isoformat(),
+                    'last_trained_count': total_sessions
+                }).eq('user_id', user_id).execute()
             else:
-                # Create new
-                print(f"   Creating new model record...")
-                data['user_id'] = user_id
-                self.client.table('model_metadata').insert(data).execute()
-                print(f"   ✅ Model created!")
-        
+                # Insert
+                self.client.table('model_metadata').insert({
+                    'user_id': user_id,
+                    'model_data': modelB64,
+                    'model_version': model_version,
+                    'total_sessions': total_sessions,
+                    'last_trained_at': datetime.now(timezone.utc).isoformat(),
+                    'last_trained_count': total_sessions
+                }).execute()
         except Exception as e:
             print(f"❌ Error saving model: {e}")
-            import traceback
-            traceback.print_exc()
             raise
     
-    def get_model_data(self, user_id: str):
-        """
-        Get model binary from Supabase
-        CORRECT decoding
-        """
+    def get_model_data(self, user_id: str) -> bytes:
+        """Get model binary data"""
         try:
-            print(f"   🔄 Fetching model from Supabase...")
-            
             response = self.client.table('model_metadata').select('model_data').eq(
                 'user_id', user_id
-            ).single().execute()
+            ).execute()
             
             if not response.data:
-                print(f"   ℹ️ No model found")
                 return None
             
-            model_base64 = response.data['model_data']
-            print(f"   ✅ Model data retrieved: {len(model_base64)} chars")
-            
-            # Decode from base64
-            try:
-                model_binary = base64.b64decode(model_base64)
-                print(f"   ✅ Model decoded successfully: {len(model_binary)} bytes")
-                return model_binary
-            
-            except Exception as decode_err:
-                print(f"   ❌ Base64 decode error: {decode_err}")
-                print(f"   First 50 chars: {model_base64[:50]}")
-                return None
-        
+            modelB64 = response.data[0]['model_data']
+            return base64.b64decode(modelB64)
         except Exception as e:
             print(f"❌ Error fetching model: {e}")
             return None
     
-    def get_model_metadata(self, user_id: str):
-        """Get model metadata (version, training info)"""
+    def get_model_metadata(self, user_id: str) -> dict:
+        """Get model metadata"""
         try:
             response = self.client.table('model_metadata').select('*').eq(
                 'user_id', user_id
-            ).single().execute()
-            return response.data
+            ).execute()
+            
+            if not response.data:
+                return {'model_version': 0, 'total_sessions': 0}
+            
+            return response.data[0]
         except Exception as e:
-            print(f"ℹ️ No model metadata found")
+            print(f"❌ Error fetching metadata: {e}")
+            return {'model_version': 0, 'total_sessions': 0}
+    
+    # ===== SCALER STORAGE (NEW) =====
+    
+    def save_scaler(self, user_id: str, scalerBinary: bytes):
+        """✅ NEW: Save StandardScaler for feature normalization"""
+        try:
+            # Convert to base64 for storage
+            scalerB64 = base64.b64encode(scalerBinary).decode()
+            
+            # Check if scaler exists
+            existing = self.client.table('model_metadata').select('*').eq(
+                'user_id', user_id
+            ).execute()
+            
+            if existing.data:
+                # Update - add scaler to existing metadata row
+                self.client.table('model_metadata').update({
+                    'scaler_data': scalerB64
+                }).eq('user_id', user_id).execute()
+            else:
+                # Insert new row with scaler
+                self.client.table('model_metadata').insert({
+                    'user_id': user_id,
+                    'scaler_data': scalerB64
+                }).execute()
+        except Exception as e:
+            print(f"❌ Error saving scaler: {e}")
+            raise
+    
+    def get_scaler_data(self, user_id: str) -> bytes:
+        """✅ NEW: Get StandardScaler binary data"""
+        try:
+            response = self.client.table('model_metadata').select('scaler_data').eq(
+                'user_id', user_id
+            ).execute()
+            
+            if not response.data or not response.data[0].get('scaler_data'):
+                return None
+            
+            scalerB64 = response.data[0]['scaler_data']
+            return base64.b64decode(scalerB64)
+        except Exception as e:
+            print(f"❌ Error fetching scaler: {e}")
             return None
     
     # ===== OTP_CHALLENGES =====
     
-    def create_otp_record(self, user_id: str, session_id: str, otp_code: str):
-        """Create OTP challenge record"""
+    def store_otp(self, user_id: str, session_id: str, otp_code: str, ip_address: str):
+        """Store OTP challenge"""
         try:
-            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat()
+            expiry_time = datetime.now(timezone.utc) + timedelta(minutes=2)
             
-            self.client.table('otp_challenges').insert({
+            response = self.client.table('otp_challenges').insert({
                 'user_id': user_id,
                 'session_id': session_id,
                 'otp_code': otp_code,
-                'status': 'PENDING',
-                'expires_at': expires_at
+                'ip_address': ip_address,
+                'is_verified': False,
+                'expires_at': expiry_time.isoformat()
             }).execute()
             
-            print(f"   ✅ OTP record created")
+            return response.data[0]['id']
         except Exception as e:
-            print(f"❌ Error creating OTP: {e}")
+            print(f"❌ Error storing OTP: {e}")
             raise
     
-    def verify_otp(self, user_id: str, session_id: str, otp_code: str) -> bool:
-        """Verify OTP code"""
+    def get_active_otp(self, user_id: str, session_id: str) -> dict:
+        """Get active OTP for session"""
         try:
-            response = self.client.table('otp_challenges').select('*').eq(
-                'user_id', user_id
-            ).eq('session_id', session_id).eq('status', 'PENDING').execute()
-            
-            if not response.data:
-                print(f"   ℹ️ No pending OTP found")
-                return False
-            
-            otp_record = response.data[0]
-            
-            # Check expiry
-            expires_at = datetime.fromisoformat(otp_record['expires_at'])
-            if datetime.now(timezone.utc) > expires_at:
-                print(f"   ⏰ OTP expired")
-                return False
-            
-            # Check code
-            if otp_record['otp_code'] != otp_code:
-                print(f"   ❌ Code mismatch")
-                return False
-            
-            # Mark as verified
-            self.client.table('otp_challenges').update({
-                'status': 'VERIFIED',
-                'verified_at': datetime.now(timezone.utc).isoformat()
-            }).eq('id', otp_record['id']).execute()
-            
-            print(f"   ✅ OTP verified")
-            return True
-        
-        except Exception as e:
-            print(f"❌ Error verifying OTP: {e}")
-            return False
-    
-    def mark_otp_failed(self, user_id: str, session_id: str):
-        """Mark OTP as failed and session as HIGH risk"""
-        try:
-            self.client.table('otp_challenges').update({
-                'status': 'FAILED'
-            }).eq('user_id', user_id).eq('session_id', session_id).execute()
-            
-            self.client.table('behavior_logs').update({
-                'risk_level': 'HIGH'
-            }).eq('user_id', user_id).eq('session_id', session_id).execute()
-            
-            print(f"   ✅ OTP marked as failed")
-        except Exception as e:
-            print(f"❌ Error marking OTP failed: {e}")
-            raise
-    
-    # ===== OTP_COOLDOWNS =====
-    
-    def check_cooldown(self, user_id: str, session_id: str) -> bool:
-        """
-        Check if user is in OTP cooldown period
-        FIXED - Handles timezone-aware datetimes from Supabase
-        """
-        try:
-            print(f"      Checking cooldown in database...")
-            
-            response = self.client.table('otp_cooldowns').select('*').eq(
-                'user_id', user_id
-            ).eq('session_id', session_id).execute()
-            
-            if not response.data:
-                print(f"      ℹ️ No cooldown record found")
-                return False  # No cooldown record = not in cooldown
-            
-            cooldown_record = response.data[0]
-            cooldown_until_str = cooldown_record['cooldown_until']
-            
-            print(f"      Cooldown until (raw): {cooldown_until_str}")
-            
-            # Parse the datetime - Supabase returns timezone-aware datetime
-            cooldown_until = datetime.fromisoformat(cooldown_until_str)
-            
-            # Get current time in UTC
             now = datetime.now(timezone.utc)
             
-            # Remove timezone info from both to make comparable
-            if cooldown_until.tzinfo is not None:
-                cooldown_until = cooldown_until.replace(tzinfo=None)
-            
-            if now.tzinfo is not None:
-                now = now.replace(tzinfo=None)
-            
-            print(f"      Current time (UTC): {now}")
-            print(f"      Cooldown until: {cooldown_until}")
-            
-            # Check if still in cooldown
-            if now < cooldown_until:
-                remaining_seconds = (cooldown_until - now).total_seconds()
-                remaining_minutes = remaining_seconds / 60
-                print(f"      ✅ COOLDOWN ACTIVE ({remaining_minutes:.1f} min remaining)")
-                return True  # Still in cooldown
-            else:
-                print(f"      ❌ Cooldown has EXPIRED")
-                return False  # Cooldown expired
-        
-        except Exception as e:
-            print(f"      ❌ Error checking cooldown: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-    
-    def set_cooldown(self, user_id: str, session_id: str, minutes: int):
-        """Set OTP cooldown period - with UTC timezone"""
-        try:
-            # Use UTC timezone for consistency with Supabase
-            verified_at = datetime.now(timezone.utc)
-            cooldown_until = verified_at + timedelta(minutes=minutes)
-            
-            existing = self.client.table('otp_cooldowns').select('id').eq(
+            response = self.client.table('otp_challenges').select('*').eq(
                 'user_id', user_id
-            ).eq('session_id', session_id).execute()
+            ).eq('session_id', session_id).eq(
+                'is_verified', False
+            ).gt('expires_at', now.isoformat()).execute()
             
-            data = {
-                'verified_at': verified_at.isoformat(),
-                'cooldown_until': cooldown_until.isoformat()
-            }
-            
-            if existing.data:
-                self.client.table('otp_cooldowns').update(data).eq(
-                    'user_id', user_id
-                ).eq('session_id', session_id).execute()
-                print(f"      ✅ Cooldown updated: {minutes} minutes")
-            else:
-                data['user_id'] = user_id
-                data['session_id'] = session_id
-                self.client.table('otp_cooldowns').insert(data).execute()
-                print(f"      ✅ Cooldown created: {minutes} minutes")
-            
-            print(f"      Verified at: {verified_at}")
-            print(f"      Cooldown until: {cooldown_until}")
-        
+            if response.data:
+                return response.data[0]
+            return None
         except Exception as e:
-            print(f"      ❌ Error setting cooldown: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ Error fetching OTP: {e}")
+            return None
+    
+    def verify_otp(self, otp_id: str):
+        """Mark OTP as verified"""
+        try:
+            self.client.table('otp_challenges').update({
+                'is_verified': True,
+                'verified_at': datetime.now(timezone.utc).isoformat()
+            }).eq('id', otp_id).execute()
+        except Exception as e:
+            print(f"❌ Error verifying OTP: {e}")
             raise

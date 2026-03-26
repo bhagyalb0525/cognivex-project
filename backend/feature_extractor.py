@@ -1,214 +1,133 @@
 """
 COGNIVEX - Feature Extractor
-Extracts 8 behavioral features from raw event data
+Extracts 8 behavioral features from raw event data.
 """
 
 import numpy as np
 from typing import Dict, List, Any
 
+
 class FeatureExtractor:
-    
+
     @staticmethod
-    def extract(rawData: Dict[str, Any]) -> Dict[str, float]:
-        """Extract 8 features from raw data"""
-        
-        keyEvents = rawData.get('key_events', [])
-        mouseEvents = rawData.get('mouse_events', [])
-        scrollEvents = rawData.get('scroll_events', [])
-        
-        features = {
-            'typing_speed': FeatureExtractor.getTypingSpeed(keyEvents),
-            'backspace_ratio': FeatureExtractor.getBackspaceRatio(keyEvents),
-            'avg_keystroke_interval': FeatureExtractor.getKeystrokeInterval(keyEvents),
-            'keystroke_variance': FeatureExtractor.getKeystrokeVariance(keyEvents),
-            'avg_mouse_speed': FeatureExtractor.getMouseSpeed(mouseEvents),
-            'mouse_move_variance': FeatureExtractor.getMouseVariance(mouseEvents),
-            'scroll_frequency': FeatureExtractor.getScrollFrequency(scrollEvents),
-            'idle_ratio': FeatureExtractor.getIdleRatio(keyEvents)
+    def extract(raw_data: Dict[str, Any]) -> Dict[str, float]:
+        key_events    = raw_data.get('key_events', [])
+        mouse_events  = raw_data.get('mouse_events', [])
+        scroll_events = raw_data.get('scroll_events', [])
+
+        return {
+            'typing_speed':           FeatureExtractor._typing_speed(key_events),
+            'backspace_ratio':        FeatureExtractor._backspace_ratio(key_events),
+            'avg_keystroke_interval': FeatureExtractor._keystroke_interval(key_events),
+            'keystroke_variance':     FeatureExtractor._keystroke_variance(key_events),
+            'avg_mouse_speed':        FeatureExtractor._mouse_speed(mouse_events),
+            'mouse_move_variance':    FeatureExtractor._mouse_variance(mouse_events),
+            'scroll_frequency':       FeatureExtractor._scroll_frequency(scroll_events),
+            'idle_ratio':             FeatureExtractor._idle_ratio(key_events),
         }
-        
-        return features
-    
+
+    # ── Feature helpers ─────────────────────────────────────────────────────
+
     @staticmethod
-    def getTypingSpeed(keyEvents: List[Dict]) -> float:
-        """Feature 1: Typing speed (keys per second)"""
-        if len(keyEvents) < 2:
-            return 0
-        
-        keyups = [e for e in keyEvents if e.get('type') == 'keyup']
-        if not keyups:
-            return 0
-            
-        duration = (keyEvents[-1].get('timestamp', 0) - keyEvents[0].get('timestamp', 0)) / 1000
-        
-        if duration == 0:
-            return 0
-        return len(keyups) / duration
-    
+    def _keyups(key_events):
+        return [e for e in key_events if e.get('type') == 'keyup']
+
     @staticmethod
-    def getBackspaceRatio(keyEvents: List[Dict]) -> float:
-        """Feature 2: Backspace ratio"""
-        if len(keyEvents) == 0:
-            return 0
-        
-        backspaces = len([e for e in keyEvents if e.get('key') == 'Backspace'])
-        return backspaces / len(keyEvents)
-    
+    def _typing_speed(key_events):
+        if len(key_events) < 2:
+            return 0.0
+        keyups    = FeatureExtractor._keyups(key_events)
+        duration  = (key_events[-1]['timestamp'] - key_events[0]['timestamp']) / 1000
+        return len(keyups) / duration if duration > 0 else 0.0
+
     @staticmethod
-    def getKeystrokeInterval(keyEvents: List[Dict]) -> float:
-        """Feature 3: Average keystroke interval (seconds)"""
-        keyups = [e for e in keyEvents if e.get('type') == 'keyup']
-        
+    def _backspace_ratio(key_events):
+        if not key_events:
+            return 0.0
+        return len([e for e in key_events if e.get('key') == 'Backspace']) / len(key_events)
+
+    @staticmethod
+    def _keystroke_interval(key_events):
+        keyups = FeatureExtractor._keyups(key_events)
         if len(keyups) < 2:
-            return 0
-        
-        totalInterval = sum([keyups[i+1].get('timestamp', 0) - keyups[i].get('timestamp', 0) 
-                            for i in range(len(keyups)-1)])
-        
-        return (totalInterval / (len(keyups) - 1)) / 1000
-    
+            return 0.0
+        intervals = [keyups[i+1]['timestamp'] - keyups[i]['timestamp']
+                     for i in range(len(keyups) - 1)]
+        return (sum(intervals) / len(intervals)) / 1000
+
     @staticmethod
-    def getKeystrokeVariance(keyEvents: List[Dict]) -> float:
-        """Feature 4: Keystroke variance"""
-        keyups = [e for e in keyEvents if e.get('type') == 'keyup']
-        
+    def _keystroke_variance(key_events):
+        keyups = FeatureExtractor._keyups(key_events)
         if len(keyups) < 2:
-            return 0
-        
-        intervals = [keyups[i+1].get('timestamp', 0) - keyups[i].get('timestamp', 0) 
-                    for i in range(len(keyups)-1)]
-        
-        mean = sum(intervals) / len(intervals)
-        variance = sum([(x - mean)**2 for x in intervals]) / len(intervals)
-        
-        return np.sqrt(variance) / 1000
-    
+            return 0.0
+        intervals = [keyups[i+1]['timestamp'] - keyups[i]['timestamp']
+                     for i in range(len(keyups) - 1)]
+        return float(np.std(intervals) / 1000)
+
     @staticmethod
-    def getMouseSpeed(mouseEvents: List[Dict]) -> float:
-        """Feature 5: Average mouse speed (pixels per second)"""
-        if len(mouseEvents) < 2:
-            return 0
-        
-        totalDistance = 0
-        for i in range(len(mouseEvents) - 1):
-            current = mouseEvents[i]
-            next_pos = mouseEvents[i+1]
-            
-            distance = np.sqrt(
-                (next_pos.get('x', 0) - current.get('x', 0))**2 + 
-                (next_pos.get('y', 0) - current.get('y', 0))**2
-            )
-            totalDistance += distance
-        
-        duration = (mouseEvents[-1].get('timestamp', 0) - mouseEvents[0].get('timestamp', 0)) / 1000
-        
-        if duration == 0:
-            return 0
-        return totalDistance / duration
-    
+    def _mouse_speed(mouse_events):
+        if len(mouse_events) < 2:
+            return 0.0
+        dist = sum(
+            np.sqrt((mouse_events[i+1]['x'] - mouse_events[i]['x'])**2 +
+                    (mouse_events[i+1]['y'] - mouse_events[i]['y'])**2)
+            for i in range(len(mouse_events) - 1)
+        )
+        duration = (mouse_events[-1]['timestamp'] - mouse_events[0]['timestamp']) / 1000
+        return dist / duration if duration > 0 else 0.0
+
     @staticmethod
-    def getMouseVariance(mouseEvents: List[Dict]) -> float:
-        """Feature 6: Mouse movement variance"""
-        if len(mouseEvents) < 2:
-            return 0
-        
+    def _mouse_variance(mouse_events):
+        if len(mouse_events) < 2:
+            return 0.0
         speeds = []
-        for i in range(len(mouseEvents) - 1):
-            current = mouseEvents[i]
-            next_pos = mouseEvents[i+1]
-            
-            distance = np.sqrt(
-                (next_pos.get('x', 0) - current.get('x', 0))**2 + 
-                (next_pos.get('y', 0) - current.get('y', 0))**2
-            )
-            timeDiff = (next_pos.get('timestamp', 0) - current.get('timestamp', 0)) / 1000
-            
-            if timeDiff > 0:
-                speeds.append(distance / timeDiff)
-        
-        if len(speeds) == 0:
-            return 0
-        
-        mean = sum(speeds) / len(speeds)
-        variance = sum([(x - mean)**2 for x in speeds]) / len(speeds)
-        
-        return np.sqrt(variance)
-    
+        for i in range(len(mouse_events) - 1):
+            dx = mouse_events[i+1]['x'] - mouse_events[i]['x']
+            dy = mouse_events[i+1]['y'] - mouse_events[i]['y']
+            dt = (mouse_events[i+1]['timestamp'] - mouse_events[i]['timestamp']) / 1000
+            if dt > 0:
+                speeds.append(np.sqrt(dx**2 + dy**2) / dt)
+        return float(np.std(speeds)) if speeds else 0.0
+
     @staticmethod
-    def getScrollFrequency(scrollEvents: List[Dict]) -> float:
-        """Feature 7: Scroll frequency (scrolls per second)"""
-        if len(scrollEvents) < 2:
-            return 0
-        
-        duration = (scrollEvents[-1].get('timestamp', 0) - scrollEvents[0].get('timestamp', 0)) / 1000
-        
-        if duration == 0:
-            return 0
-        return len(scrollEvents) / duration
-    
+    def _scroll_frequency(scroll_events):
+        if len(scroll_events) < 2:
+            return 0.0
+        duration = (scroll_events[-1]['timestamp'] - scroll_events[0]['timestamp']) / 1000
+        return len(scroll_events) / duration if duration > 0 else 0.0
+
     @staticmethod
-    def getIdleRatio(keyEvents: List[Dict]) -> float:
-        """Feature 8: Idle ratio"""
-        keyups = [e for e in keyEvents if e.get('type') == 'keyup']
-        
+    def _idle_ratio(key_events):
+        keyups = FeatureExtractor._keyups(key_events)
         if len(keyups) < 2:
-            return 0
-        
-        activeTime = sum([keyups[i+1].get('timestamp', 0) - keyups[i].get('timestamp', 0) 
-                         for i in range(len(keyups)-1)])
-        
-        totalTime = keyups[-1].get('timestamp', 0) - keyups[0].get('timestamp', 0)
-        
-        if totalTime == 0:
-            return 0
-        
-        return 1 - (activeTime / totalTime)
-    
+            return 0.0
+        active    = sum(keyups[i+1]['timestamp'] - keyups[i]['timestamp']
+                        for i in range(len(keyups) - 1))
+        total     = keyups[-1]['timestamp'] - keyups[0]['timestamp']
+        return 1.0 - (active / total) if total > 0 else 0.0
+
+    # ── Aggregation ─────────────────────────────────────────────────────────
+
     @staticmethod
     def aggregateFeatures(snapshots: List[Dict]) -> Dict[str, float]:
-        """Aggregate features from LOW-RISK snapshots only"""
-        
-        if len(snapshots) == 0:
-            return FeatureExtractor.getDefaultFeatures()
-        
-        allFeatures = []
-        for snapshot in snapshots:
-            # Only use LOW risk snapshots for training data
-            if snapshot.get('risk_level') != 'LOW':
-                continue
-            
-            rawData = snapshot.get('raw_data') or snapshot
-            features = FeatureExtractor.extract(rawData)
-            allFeatures.append(features)
-        
-        if not allFeatures:
-            # Fallback: use all snapshots if no LOW risk data
-            for snapshot in snapshots:
-                rawData = snapshot.get('raw_data') or snapshot
-                features = FeatureExtractor.extract(rawData)
-                allFeatures.append(features)
-        
-        # Average across all snapshots
-        aggregated = {}
-        featureNames = list(allFeatures[0].keys())
-        
-        for featureName in featureNames:
-            values = [f[featureName] for f in allFeatures]
-            avg = sum(values) / len(values)
-            aggregated[featureName] = float(round(avg, 6))
-        
-        return aggregated
-    
+        """
+        Average features across LOW-risk snapshots.
+        Snapshots are already filtered to LOW by the DB query — no need to re-filter.
+        """
+        if not snapshots:
+            return FeatureExtractor._defaults()
+
+        all_features = [FeatureExtractor.extract(s.get('raw_data') or s)
+                        for s in snapshots]
+
+        keys = list(all_features[0].keys())
+        return {k: round(sum(f[k] for f in all_features) / len(all_features), 6)
+                for k in keys}
+
     @staticmethod
-    def getDefaultFeatures() -> Dict[str, float]:
-        """Get default zero features"""
-        return {
-            'typing_speed': 0,
-            'backspace_ratio': 0,
-            'avg_keystroke_interval': 0,
-            'keystroke_variance': 0,
-            'avg_mouse_speed': 0,
-            'mouse_move_variance': 0,
-            'scroll_frequency': 0,
-            'idle_ratio': 0
-        }
+    def _defaults() -> Dict[str, float]:
+        return {k: 0.0 for k in [
+            'typing_speed', 'backspace_ratio', 'avg_keystroke_interval',
+            'keystroke_variance', 'avg_mouse_speed', 'mouse_move_variance',
+            'scroll_frequency', 'idle_ratio'
+        ]}

@@ -1,109 +1,76 @@
 """
 COGNIVEX - OTP Controller
-In-memory OTP generation and verification
-OTP codes printed to terminal for testing
+In-memory OTP with:
+  - 2-minute expiry per OTP code
+  - 5-minute cooldown between OTP challenges per session
 """
 
 import random
-import string
 from datetime import datetime, timedelta
+from typing import Dict, Optional
+
 
 class OTPController:
-    
-    def __init__(self, supabase):
-        self.supabase = supabase
-        self.otp_storage = {}  # {session_id: {'code': 'XXXX', 'expires_at': time}}
-    
-    def generateOTP(self, user_id: str = None, session_id: str = None) -> str:
-        """Generate OTP in memory and print to terminal"""
-        
-        print(f"   Creating OTP challenge...")
-        
-        # Generate random 4-digit OTP
-        otpCode = ''.join(random.choices(string.digits, k=4))
-        
-        # Store in memory
-        expires_at = datetime.now() + timedelta(minutes=2)
-        
-        if session_id:
-            self.otp_storage[session_id] = {
-                'user_id': user_id,
-                'code': otpCode,
-                'expires_at': expires_at
-            }
-        
-        # PRINT TO TERMINAL FOR TESTING
-        print(f"\n" + "="*70)
-        print(f"   🔐 OTP GENERATED (MEDIUM RISK DETECTED)")
-        print(f"   {'='*70}")
-        print(f"   📧 OTP Code: {otpCode}")
-        print(f"   Expires at: {expires_at.strftime('%H:%M:%S')}")
-        if session_id:
-            print(f"   Session ID: {session_id}")
-        print(f"   {'='*70}\n")
-        
-        return otpCode
-    
-    def createOTP(self, user_id: str, session_id: str) -> str:
-        """Alias for generateOTP for backward compatibility"""
-        return self.generateOTP(user_id, session_id)
-    
-    def storeOTP(self, user_id: str, session_id: str, otp_code: str, ip_address: str) -> str:
-        """Store OTP to database"""
-        try:
-            return self.supabase.store_otp(user_id, session_id, otp_code, ip_address)
-        except Exception as e:
-            print(f"   ⚠️ Error storing OTP to database: {e}")
-            return None
-    
-    def verifyOTP(self, user_id: str, session_id: str, provided_code: str) -> dict:
-        """Verify OTP from memory"""
-        
-        print(f"   Verifying OTP...")
-        
-        # Check if OTP exists for this session
-        if session_id not in self.otp_storage:
-            print(f"   ❌ No OTP generated for this session")
-            return {
-                'valid': False,
-                'reason': 'No OTP generated for this session'
-            }
-        
-        otp_data = self.otp_storage[session_id]
-        stored_code = otp_data['code']
-        expires_at = otp_data['expires_at']
-        
-        print(f"   Provided code: {provided_code}")
-        print(f"   Stored code: {stored_code}")
-        
-        # Check expiry
-        if datetime.now() > expires_at:
-            print(f"   ⏰ OTP expired")
-            del self.otp_storage[session_id]
-            return {
-                'valid': False,
-                'reason': 'OTP expired'
-            }
-        
-        # Check code
-        if str(stored_code) == str(provided_code).strip():
-            print(f"   ✅ OTP VERIFIED!")
-            del self.otp_storage[session_id]
-            return {
-                'valid': True,
-                'reason': 'OTP verified successfully'
-            }
-        else:
-            print(f"   ❌ OTP does not match")
-            return {
-                'valid': False,
-                'reason': 'OTP does not match'
-            }
-    
-    def checkCooldown(self, user_id: str, session_id: str) -> bool:
-        """Check if in cooldown (placeholder for now)"""
-        return False
-    
-    def getOTPStorage(self):
-        """Debug: see what's in memory"""
-        return self.otp_storage
+
+    OTP_EXPIRY_MINUTES = 2
+    COOLDOWN_MINUTES   = 5   # min gap between two OTP challenges in same session
+
+    def __init__(self, supabase=None):
+        # {user_id: {session_id: {code, expires_at, attempts, last_issued_at}}}
+        self.otp_store: Dict[str, Dict[str, Dict]] = {}
+
+    def _get(self, user_id: str, session_id: str) -> Optional[Dict]:
+        return self.otp_store.get(user_id, {}).get(session_id)
+
+    def isCoolingDown(self, user_id: str, session_id: str) -> bool:
+        """Returns True if cooldown is still active — skip OTP challenge."""
+        record = self._get(user_id, session_id)
+        if not record:
+            return False
+        last = record.get('last_issued_at')
+        if not last:
+            return False
+        return datetime.now() < last + timedelta(minutes=self.COOLDOWN_MINUTES)
+
+    def generateOTP(self) -> str:
+        return str(random.randint(1000, 9999))
+
+    def storeOTP(self, user_id: str, session_id: str, otp_code: str, ip_address: str = None):
+        if user_id not in self.otp_store:
+            self.otp_store[user_id] = {}
+
+        now = datetime.now()
+        self.otp_store[user_id][session_id] = {
+            'code':           otp_code,
+            'expires_at':     now + timedelta(minutes=self.OTP_EXPIRY_MINUTES),
+            'last_issued_at': None,  # set only after successful verification
+            'attempts':       0,
+        }
+        print(f"   OTP stored — expires {self.OTP_EXPIRY_MINUTES} min, "
+              f"cooldown {self.COOLDOWN_MINUTES} min")
+
+    def verifyOTP(self, user_id: str, session_id: str, otp_code: str) -> Dict:
+        record = self._get(user_id, session_id)
+
+        if not record:
+            return {'valid': False, 'reason': 'No OTP generated for this session'}
+
+        if datetime.now() > record['expires_at']:
+            del self.otp_store[user_id][session_id]
+            return {'valid': False, 'reason': 'OTP expired'}
+
+        if record['attempts'] >= 3:
+            del self.otp_store[user_id][session_id]
+            return {'valid': False, 'reason': 'Too many attempts'}
+
+        if record['code'] != otp_code:
+            record['attempts'] += 1
+            remaining = 3 - record['attempts']
+            return {'valid': False,
+                    'reason': f'Invalid OTP — {remaining} attempt(s) remaining'}
+
+        # Valid — now activate cooldown
+        record['code']           = None
+        record['expires_at']     = datetime.now()
+        record['last_issued_at'] = datetime.now()
+        return {'valid': True, 'reason': 'OTP verified successfully'}
